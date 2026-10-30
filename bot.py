@@ -23,7 +23,7 @@ TARIFFS = {
     "7m": {"name": "7 месяцев", "price_stars": 350, "price_rub": 630, "days": 210}
 }
 
-CRYPTO_WALLET = "ТВОЙ_АДРЕС_КОШЕЛЬКА_USDT_TRC20"
+CRYPTO_WALLET = "TAZnQFAMux1aFLmUQLRyuccTmuvzVxA8FA"
 # ============================================
 
 logging.basicConfig(level=logging.INFO)
