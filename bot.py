@@ -8,7 +8,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 # ================= НАСТРОЙКИ =================
 BOT_TOKEN = "9200899614:AAFCcDLprx6o1MIkDVOPfFOeMA1eMhve2P0"
-ADMIN_ID = 123456789  # Твой Telegram ID (узнай у @userinfobot)
+ADMIN_ID = 5884767841  # Твой Telegram ID (узнай у @userinfobot)
 
 # Данные сервера Нидерланды
 SERVER_IP = "1.1.1.1" 
