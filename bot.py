@@ -1,22 +1,26 @@
 import asyncio
 import logging
-import uuid
+import random
+import os
+from aiohttp import web
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, LabeledPrice, PreCheckoutQuery
+from aiogram.types import LabeledPrice, PreCheckoutQuery
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 # ================= НАСТРОЙКИ =================
-BOT_TOKEN = "9200899614:AAFCcDLprx6o1MIkDVOPfFOeMA1eMhve2P0"
-ADMIN_ID = 5884767841  # Твой Telegram ID (узнай у @userinfobot)
+BOT_TOKEN = "9200899614:AAFCcDLprx6o1MIkDVOPfFOeMA1eMhve2P0" 
+ADMIN_ID = 5884767841 
+SUPPORT_USERNAME = "neeloq"
 
-# Данные сервера Нидерланды
-SERVER_IP = "1.1.1.1" 
-PUBLIC_KEY = "R1oKq7DaLzXw9P0mNc3bVh5jY2sT8uFg4eWx6AqB1Ck" 
-SHORT_ID = "1a2b3c4d"
-SNI = "www.microsoft.com"
+# Список серверов
+SERVERS = [
+    "vless://d65cc14c-f53f-4fe2-b262-97856601319c@169.40.42.75:443?security=reality&pbk=e2RLf57Li_-MDZGE9ss1BWPgP54mqRb5PfXhW2jcVVg&sid=c39cc7310a&sni=yahoo.com&fp=firefox&type=tcp#Germany",
+    "vless://b8794f67-80d9-4124-8fc5-2d2ce5516573@50.7.41.142:443?security=reality&pbk=AYL1z7PNyo6LqYLeZpXa50FnK9eEu7o18KHRhOlST1w&sid=bd72&sni=deepl.com&fp=chrome&type=tcp#Switzerland",
+    "vless://f8c8dc3d-0d37-46b0-8b34-a7232882fcfe@169.197.142.22:18000?encryption=none&type=tcp&security=none#USA",
+    "vless://9a0e84f8-4b58-477f-99da-5fac5a2e58e8@45.133.151.187:443?security=reality&pbk=pAgrBKJCmuSJHIzYkEJTqsOBOVBK_DMtEqFPo-PaTkg&sid=b3c9d0c6bdd114a6&sni=36a466g.fi1.h1clayd.click&fp=ios&type=tcp&headerType=none#Russia"
+]
 
-# Тарифы (price_stars - курс звезд, price_rub - рубли для крипты)
 TARIFFS = {
     "1m": {"name": "1 месяц", "price_stars": 50, "price_rub": 90, "days": 30},
     "3m": {"name": "3 месяца", "price_stars": 150, "price_rub": 270, "days": 90},
@@ -30,11 +34,14 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
+# --- КОД БОТА (без изменений) ---
 def main_menu():
     builder = InlineKeyboardBuilder()
     for key, data in TARIFFS.items():
         builder.button(text=f"{data['name']} - {data['price_rub']}₽", callback_data=f"tariff_{key}")
-    builder.adjust(1)
+    builder.button(text="📖 Инструкция", callback_data="instruction")
+    builder.button(text="💬 Поддержка", url=f"https://t.me/{SUPPORT_USERNAME}")
+    builder.adjust(1, 1, 1, 2)
     return builder.as_markup()
 
 def pay_method_menu(tariff_id):
@@ -47,29 +54,37 @@ def pay_method_menu(tariff_id):
 
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message):
-    await message.answer(
-        "👋 Привет! Это VPN.\n\nВыбери тариф:",
-        reply_markup=main_menu()
+    await message.answer("👋 Привет! Это VPN.\n\nВыбери тариф:", reply_markup=main_menu())
+
+@dp.callback_query(F.data == "instruction")
+async def show_instruction(call: types.CallbackQuery):
+    text = (
+        "📖 <b>Как подключиться:</b>\n\n"
+        "1. Скачайте приложение <b>Happ</b>.\n"
+        "2. Купите тариф и скопируйте ключ (vless://).\n"
+        "3. Откройте Happ и нажмите «+» -> «Импорт из буфера».\n"
+        "4. Вставьте ключ и нажмите «Подключиться»."
     )
+    builder = InlineKeyboardBuilder()
+    builder.button(text="⬅️ Назад", callback_data="back")
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=builder.as_markup())
 
 @dp.callback_query(F.data == "back")
-async def back_to_menu(call: CallbackQuery):
+async def back_to_menu(call: types.CallbackQuery):
     await call.message.edit_text("Выбери тариф:", reply_markup=main_menu())
 
 @dp.callback_query(F.data.startswith("tariff_"))
-async def select_tariff(call: CallbackQuery):
+async def select_tariff(call: types.CallbackQuery):
     tariff_id = call.data.split("_")[1]
     await call.message.edit_text(
         f"Выбран тариф: {TARIFFS[tariff_id]['name']}\nКак будем оплачивать?",
         reply_markup=pay_method_menu(tariff_id)
     )
 
-# --- ОПЛАТА ЗВЕЗДАМИ ---
 @dp.callback_query(F.data.startswith("stars_"))
-async def pay_stars(call: CallbackQuery):
+async def pay_stars(call: types.CallbackQuery):
     tariff_id = call.data.split("_")[1]
     price = TARIFFS[tariff_id]["price_stars"]
-    
     await call.message.answer_invoice(
         title=f"VPN: {TARIFFS[tariff_id]['name']}",
         description="Доступ к VPN на выбранный период",
@@ -87,54 +102,35 @@ async def pre_checkout(query: PreCheckoutQuery):
 async def on_success_payment(message: types.Message):
     payload = message.successful_payment.invoice_payload
     tariff_id = payload.split("_")[1]
-    
-    # Генерируем ключ
-    new_uuid = str(uuid.uuid4())
-    link = f"vless://{new_uuid}@{SERVER_IP}:443?security=reality&pbk={PUBLIC_KEY}&sid={SHORT_ID}&sni={SNI}&fp=chrome&type=tcp#VPN_NL"
-    
+    selected_link = random.choice(SERVERS)
     await message.answer(
-        f"✅ Оплата Stars прошла успешно!\n\n"
-        f"🔑 <b>Ваш ключ для Happ:</b>\n<code>{link}</code>\n\n"
-        f"Скопируйте и добавьте в Happ.",
+        f"✅ Оплата прошла!\n\n🔑 <b>Ваш ключ:</b>\n<code>{selected_link}</code>",
         parse_mode="HTML"
     )
 
-# --- ОПЛАТА КРИПТОЙ (Ручная проверка) ---
 @dp.callback_query(F.data.startswith("crypto_"))
-async def pay_crypto(call: CallbackQuery):
+async def pay_crypto(call: types.CallbackQuery):
     tariff_id = call.data.split("_")[1]
     price = TARIFFS[tariff_id]["price_rub"]
-    
     builder = InlineKeyboardBuilder()
     builder.button(text="✅ Я оплатил", callback_data=f"check_crypto_{tariff_id}")
-    
+    builder.button(text="⬅️ Назад", callback_data="back")
+    builder.adjust(1)
     await call.message.edit_text(
-        f"🪙 Оплата криптой\n"
-        f"Сумма: {price}₽ (в эквиваленте USDT)\n\n"
-        f"Адрес кошелька (TRC20):\n<code>{CRYPTO_WALLET}</code>\n\n"
-        f"Переведите точную сумму и нажмите кнопку.",
+        f"🪙 Сумма: {price}₽\n\nАдрес:\n<code>{CRYPTO_WALLET}</code>\n\nПереведите и нажмите кнопку.",
         reply_markup=builder.as_markup(),
         parse_mode="HTML"
     )
 
 @dp.callback_query(F.data.startswith("check_crypto_"))
-async def check_crypto(call: CallbackQuery):
+async def check_crypto(call: types.CallbackQuery):
     tariff_id = call.data.split("_")[1]
-    
-    await bot.send_message(
-        ADMIN_ID,
-        f"💰 @{call.from_user.username} нажал 'Оплатил крипту'!\n"
-        f"User ID: {call.from_user.id}\n"
-        f"Тариф: {TARIFFS[tariff_id]['name']}\n\n"
-        f"Если деньги пришли, напиши: /give_key {call.from_user.id} {tariff_id}"
-    )
-    await call.message.edit_text("⏳ Проверяю оплату... Ожидайте подтверждения от админа.")
+    await bot.send_message(ADMIN_ID, f"💰 @{call.from_user.username} нажал 'Оплатил'!\nID: {call.from_user.id}\nТариф: {TARIFFS[tariff_id]['name']}\n\nЕсли пришли, напиши: /give_key {call.from_user.id} {tariff_id}")
+    await call.message.edit_text("⏳ Ожидайте подтверждения от админа.")
 
 @dp.message(Command("give_key"))
 async def give_key_cmd(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    
+    if message.from_user.id != ADMIN_ID: return
     try:
         args = message.text.split()
         target_id = int(args[1])
@@ -142,20 +138,27 @@ async def give_key_cmd(message: types.Message):
     except:
         await message.answer("Использование: /give_key <user_id> <tariff_id>")
         return
-    
-    new_uuid = str(uuid.uuid4())
-    link = f"vless://{new_uuid}@{SERVER_IP}:443?security=reality&pbk={PUBLIC_KEY}&sid={SHORT_ID}&sni={SNI}&fp=chrome&type=tcp#VPN_NL"
-    
-    await bot.send_message(
-        target_id,
-        f"✅ Ваша подписка активирована!\n\n"
-        f"🔑 <b>Ваш ключ для Happ:</b>\n<code>{link}</code>\n\n"
-        f"Скопируйте и добавьте в Happ.",
-        parse_mode="HTML"
-    )
-    await message.answer(f"Ключ выдан пользователю {target_id}")
+    selected_link = random.choice(SERVERS)
+    await bot.send_message(target_id, f"✅ Подписка активирована!\n\n🔑 <b>Ваш ключ:</b>\n<code>{selected_link}</code>", parse_mode="HTML")
+    await message.answer(f"Ключ выдан {target_id}")
+
+# --- ВЕБ-СЕРВЕР ДЛЯ ПИНАЛКИ ---
+async def handle_ping(request):
+    return web.Response(text="Bot is alive!")
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get('/', handle_ping)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    logging.info(f"Web server started on port {port}")
 
 async def main():
+    # Запускаем веб-сервер для пингов параллельно с ботом
+    asyncio.create_task(start_web_server())
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
