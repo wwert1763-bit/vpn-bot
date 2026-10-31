@@ -2,21 +2,20 @@ import asyncio
 import logging
 import random
 import os
+import aiohttp
 from aiohttp import web
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import LabeledPrice, PreCheckoutQuery
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiocryptopay import AioCryptoPay, Networks
 
 # ================= НАСТРОЙКИ =================
-BOT_TOKEN = "9200899614:AAFCcDLprx6o1MIkDVOPfFOeMA1eMhve2P0" # Твой токен от BotFather
+BOT_TOKEN = "9200899614:AAFCcDLprx6o1MIkDVOPfFOeMA1eMhve2P0" 
 ADMIN_ID = 5884767841 
 SUPPORT_USERNAME = "neeloq"
 
 # ВСТАВЬ СЮДА НОВЫЙ ТОКЕН ОТ CRYPTOBOT
 CRYPTO_PAY_TOKEN = "663855:AAcDzgWR4pqFxBOIryv6mHp69gPeq3bK2p1"
-crypto = AioCryptoPay(token=CRYPTO_PAY_TOKEN, network=Networks.MAIN_NET)
 
 # Список серверов
 SERVERS = [
@@ -36,6 +35,25 @@ TARIFFS = {
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+
+# --- ФУНКЦИЯ ДЛЯ СОЗДАНИЯ СЧЕТА В CRYPTOBOT ---
+async def create_crypto_invoice(amount_usd, description):
+    url = "https://pay.crypt.bot/api/createInvoice"
+    headers = {"Crypto-Pay-API-Token": CRYPTO_PAY_TOKEN}
+    payload = {
+        "currency_type": "fiat",
+        "fiat": "USD",
+        "amount": str(amount_usd),
+        "description": description
+    }
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, json=payload, headers=headers) as response:
+            if response.status == 200:
+                data = await response.json()
+                if data.get("ok"):
+                    return data["result"]["bot_invoice_url"]
+            return None
 
 def main_menu():
     builder = InlineKeyboardBuilder()
@@ -113,11 +131,13 @@ async def pay_crypto(call: types.CallbackQuery):
     tariff_id = call.data.split("_")[1]
     price_usd = TARIFFS[tariff_id]["price_usd"]
     
-    try:
-        invoice = await crypto.create_invoice(amount=price_usd, currency_type='fiat', fiat='USD', description=f"VPN: {TARIFFS[tariff_id]['name']}")
-        
+    await call.message.edit_text("⏳ Создаю счет...")
+    
+    invoice_url = await create_crypto_invoice(price_usd, f"VPN: {TARIFFS[tariff_id]['name']}")
+    
+    if invoice_url:
         builder = InlineKeyboardBuilder()
-        builder.button(text=f"💳 Оплатить {price_usd}$", url=invoice.bot_invoice_url)
+        builder.button(text=f"💳 Оплатить {price_usd}$", url=invoice_url)
         builder.button(text="⬅️ Назад", callback_data="back")
         builder.adjust(1)
         
@@ -129,9 +149,8 @@ async def pay_crypto(call: types.CallbackQuery):
             reply_markup=builder.as_markup(),
             parse_mode="HTML"
         )
-    except Exception as e:
-        logging.error(f"CryptoBot error: {e}")
-        await call.message.edit_text(f"❌ Ошибка при создании счета: {e}\nПопробуйте позже.")
+    else:
+        await call.message.edit_text("❌ Не удалось создать счет. Проверьте токен CryptoBot.")
 
 # --- ВЕБ-СЕРВЕР ДЛЯ ПИНАЛКИ ---
 async def handle_ping(request):
