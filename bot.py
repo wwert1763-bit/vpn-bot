@@ -7,16 +7,11 @@ from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import LabeledPrice, PreCheckoutQuery
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiocryptopay import AioCryptoPay, Networks
 
 # ================= НАСТРОЙКИ =================
-BOT_TOKEN = "9200899614:AAFCcDLprx6o1MIkDVOPfFOeMA1eMhve2P0" 
+BOT_TOKEN = "9200899614:AAFCcDLprx6o1MIkDVOPfFOeMA1eMhve2P0" # Вставь свой токен от BotFather
 ADMIN_ID = 5884767841 
 SUPPORT_USERNAME = "neeloq"
-
-# Токен от CryptoBot (получи в @CryptoBot -> Crypto Pay -> Create App)
-CRYPTO_PAY_TOKEN = "663855:AAcDzgWR4pqFxBOIryv6mHp69gPeq3bK2p1"
-crypto = AioCryptoPay(token=CRYPTO_PAY_TOKEN, network=Networks.MAIN_NET)
 
 # Список серверов
 SERVERS = [
@@ -26,13 +21,14 @@ SERVERS = [
     "vless://9a0e84f8-4b58-477f-99da-5fac5a2e58e8@45.133.151.187:443?security=reality&pbk=pAgrBKJCmuSJHIzYkEJTqsOBOVBK_DMtEqFPo-PaTkg&sid=b3c9d0c6bdd114a6&sni=36a466g.fi1.h1clayd.click&fp=ios&type=tcp&headerType=none#Russia"
 ]
 
-# Тарифы (price_usd добавлен)
 TARIFFS = {
     "1m": {"name": "1 месяц", "price_stars": 50, "price_rub": 90, "price_usd": 1, "days": 30},
     "3m": {"name": "3 месяца", "price_stars": 150, "price_rub": 270, "price_usd": 3, "days": 90},
     "7m": {"name": "7 месяцев", "price_stars": 350, "price_rub": 630, "price_usd": 7, "days": 210}
 }
 
+# Заглушка для кошелька (пока нет автовыдачи)
+CRYPTO_WALLET = "TAZnQFAMux1aFLmUQLRyuccTmuvzVxA8FA"
 # ============================================
 
 logging.basicConfig(level=logging.INFO)
@@ -86,7 +82,6 @@ async def select_tariff(call: types.CallbackQuery):
 async def pay_stars(call: types.CallbackQuery):
     tariff_id = call.data.split("_")[1]
     price = TARIFFS[tariff_id]["price_stars"]
-    
     await call.message.answer_invoice(
         title=f"VPN: {TARIFFS[tariff_id]['name']}",
         description="Доступ к VPN",
@@ -105,51 +100,60 @@ async def on_success_payment(message: types.Message):
     payload = message.successful_payment.invoice_payload
     tariff_id = payload.split("_")[1]
     selected_link = random.choice(SERVERS)
-    
     await message.answer(
         f"✅ Оплата Stars прошла успешно!\n\n🔑 <b>Ваш ключ:</b>\n<code>{selected_link}</code>\n\nСкопируйте и добавьте в Happ.",
         parse_mode="HTML"
     )
 
-# --- ОПЛАТА КРИПТОЙ (CryptoBot) ---
+# --- ОПЛАТА КРИПТОЙ (РУЧНАЯ) ---
 @dp.callback_query(F.data.startswith("crypto_"))
 async def pay_crypto(call: types.CallbackQuery):
     tariff_id = call.data.split("_")[1]
+    price_rub = TARIFFS[tariff_id]["price_rub"]
     price_usd = TARIFFS[tariff_id]["price_usd"]
     
-    try:
-        # Создаем счет в CryptoBot
-        invoice = await crypto.create_invoice(amount=price_usd, currency_type='fiat', fiat='USD', description=f"VPN: {TARIFFS[tariff_id]['name']}")
-        
-        builder = InlineKeyboardBuilder()
-        builder.button(text=f"💳 Оплатить {price_usd}$", url=invoice.bot_invoice_url)
-        builder.button(text="⬅️ Назад", callback_data="back")
-        builder.adjust(1)
-        
-        await call.message.edit_text(
-            f"🪙 <b>Оплата криптой</b>\n\n"
-            f"Тариф: {TARIFFS[tariff_id]['name']}\n"
-            f"Сумма: {price_usd}$\n\n"
-            f"Нажмите кнопку ниже, чтобы перейти к оплате:",
-            reply_markup=builder.as_markup(),
-            parse_mode="HTML"
-        )
-    except Exception as e:
-        logging.error(f"CryptoBot error: {e}")
-        await call.message.edit_text("❌ Ошибка при создании счета. Попробуйте позже.")
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✅ Я оплатил", callback_data=f"check_crypto_{tariff_id}")
+    builder.button(text="⬅️ Назад", callback_data="back")
+    builder.adjust(1)
+    
+    await call.message.edit_text(
+        f"🪙 <b>Оплата криптой</b>\n\n"
+        f"Тариф: {TARIFFS[tariff_id]['name']}\n"
+        f"Сумма: {price_rub}₽ ({price_usd}$)\n\n"
+        f"Адрес кошелька:\n<code>{663855:AAcDzgWR4pqFxBOIryv6mHp69gPeq3bK2p1}</code>\n\n"
+        f"Переведите точную сумму и нажмите кнопку.",
+        reply_markup=builder.as_markup(),
+        parse_mode="HTML"
+    )
 
-# --- ВЕБ-СЕРВЕР ДЛЯ ПИНАЛКИ И WEBHOOK ---
+@dp.callback_query(F.data.startswith("check_crypto_"))
+async def check_crypto(call: types.CallbackQuery):
+    tariff_id = call.data.split("_")[1]
+    await bot.send_message(ADMIN_ID, f"💰 @{call.from_user.username} нажал 'Оплатил'!\nID: {call.from_user.id}\nТариф: {TARIFFS[tariff_id]['name']}\n\nЕсли пришли, напиши: /give_key {call.from_user.id} {tariff_id}")
+    await call.message.edit_text("⏳ Ожидайте подтверждения от админа.")
+
+@dp.message(Command("give_key"))
+async def give_key_cmd(message: types.Message):
+    if message.from_user.id != ADMIN_ID: return
+    try:
+        args = message.text.split()
+        target_id = int(args[1])
+        tariff_id = args[2]
+    except:
+        await message.answer("Использование: /give_key <user_id> <tariff_id>")
+        return
+    selected_link = random.choice(SERVERS)
+    await bot.send_message(target_id, f"✅ Подписка активирована!\n\n🔑 <b>Ваш ключ:</b>\n<code>{selected_link}</code>", parse_mode="HTML")
+    await message.answer(f"Ключ выдан {target_id}")
+
+# --- ВЕБ-СЕРВЕР ДЛЯ ПИНАЛКИ ---
 async def handle_ping(request):
     return web.Response(text="Bot is alive!")
-
-# В будущем сюда можно добавить обработку webhook от CryptoBot для автовыдачи
-async def handle_crypto_webhook(request):
-    return web.Response(text="OK")
 
 async def start_web_server():
     app = web.Application()
     app.router.add_get('/', handle_ping)
-    app.router.add_post('/crypto_webhook', handle_crypto_webhook)
     runner = web.AppRunner(app)
     await runner.setup()
     port = int(os.environ.get("PORT", 8080))
