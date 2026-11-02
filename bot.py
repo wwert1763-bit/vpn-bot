@@ -8,7 +8,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, LabeledPrice, PreCheckoutQuery
 from aiogram.exceptions import TelegramForbiddenError
 
 # --- НАСТРОЙКИ ---
@@ -80,6 +80,14 @@ def get_all_users():
     conn.close()
     return users
 
+def save_purchase(user_id, amount, vpn_key):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO purchases (user_id, amount, vpn_key, created_at) VALUES (?, ?, ?, ?)",
+                   (user_id, amount, vpn_key, datetime.now().strftime("%Y-%m-%d %H:%M")))
+    conn.commit()
+    conn.close()
+
 # --- СОСТОЯНИЯ ---
 class AdminStates(StatesGroup):
     waiting_for_password = State()
@@ -106,6 +114,13 @@ def admin_menu():
         [KeyboardButton(text="🔙 Выйти в меню")]
     ]
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
+
+def pay_method_menu(plan):
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💳 Крипта (CryptoBot)", callback_data=f"crypto_{plan}")],
+        [InlineKeyboardButton(text="⭐ Telegram Stars", callback_data=f"stars_{plan}")]
+    ])
+    return kb
 
 # --- БОТ ---
 bot = Bot(token=BOT_TOKEN)
@@ -215,16 +230,25 @@ async def exit_admin(message: types.Message):
 @dp.message(F.text == "🛒 Купить VPN")
 async def buy_vpn(message: types.Message):
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="1 месяц - 40 ₽", callback_data="buy_1m")],
-        [InlineKeyboardButton(text="3 месяца - 100 ₽", callback_data="buy_3m")]
+        [InlineKeyboardButton(text="1 месяц - 40 ₽", callback_data="select_1m")],
+        [InlineKeyboardButton(text="3 месяца - 100 ₽", callback_data="select_3m")]
     ])
     await message.answer("Выберите тариф для покупки:", reply_markup=kb)
 
-# --- ОПЛАТА ЧЕРЕЗ CRYPTOBOT ---
-@dp.callback_query(F.data.startswith("buy_"))
-async def process_buy(callback: types.CallbackQuery):
+@dp.callback_query(F.data.startswith("select_"))
+async def select_payment_method(callback: types.CallbackQuery):
+    plan = callback.data.split("_")[1]
+    price = 40 if plan == "1m" else 100
+    await callback.message.edit_text(
+        f"Выбран тариф: {plan} ({price} ₽).\nКак будете оплачивать?",
+        reply_markup=pay_method_menu(plan)
+    )
+
+# --- ОПЛАТА КРИПТОЙ ---
+@dp.callback_query(F.data.startswith("crypto_"))
+async def process_crypto(callback: types.CallbackQuery):
     if not CRYPTO_BOT_TOKEN or CRYPTO_BOT_TOKEN == "ВСТАВЬ_ТОКЕН_ОТ_CRYPTOBOT":
-        await callback.message.answer("⚠️ Ошибка: Админ не настроил оплату через CryptoBot.")
+        await callback.message.answer("⚠️ Админ не настроил CryptoBot.")
         return
 
     plan = callback.data.split("_")[1]
@@ -251,7 +275,6 @@ async def process_buy(callback: types.CallbackQuery):
                         [InlineKeyboardButton(text="💳 Оплатить", url=pay_url)],
                         [InlineKeyboardButton(text="✅ Я оплатил", callback_data=f"check_{invoice_id}_{plan}")]
                     ])
-                    
                     await callback.message.edit_text(
                         f"💳 Счет на {price} ₽ создан.\nПосле оплаты нажмите кнопку «Я оплатил».",
                         reply_markup=kb
@@ -261,13 +284,14 @@ async def process_buy(callback: types.CallbackQuery):
             else:
                 await callback.message.answer("❌ Ошибка сети.")
 
+# ИСПРАВЛЕНА ОШИБКА: invoice_ids теперь передается массивом [invoice_id]
 @dp.callback_query(F.data.startswith("check_"))
 async def check_payment(callback: types.CallbackQuery):
     _, invoice_id, plan = callback.data.split("_")
     
     url = "https://pay.crypt.bot/api/getInvoices"
     headers = {"Crypto-Pay-API-Token": CRYPTO_BOT_TOKEN}
-    payload = {"invoice_ids": invoice_id}
+    payload = {"invoice_ids": [invoice_id]}  # <--- ИСПРАВЛЕНО
     
     async with aiohttp.ClientSession() as session:
         async with session.post(url, json=payload, headers=headers) as resp:
@@ -279,13 +303,7 @@ async def check_payment(callback: types.CallbackQuery):
                     if invoice["status"] == "paid":
                         price = 40 if plan == "1m" else 100
                         fake_key = "vless://real-key-from-server@de27.h1cloud.net:25054?...#Germany"
-                        
-                        conn = sqlite3.connect(DB_NAME)
-                        cursor = conn.cursor()
-                        cursor.execute("INSERT INTO purchases (user_id, amount, vpn_key, created_at) VALUES (?, ?, ?, ?)",
-                                       (callback.from_user.id, price, fake_key, datetime.now().strftime("%Y-%m-%d %H:%M")))
-                        conn.commit()
-                        conn.close()
+                        save_purchase(callback.from_user.id, price, fake_key)
                         
                         await callback.message.edit_text(
                             f"✅ Оплата подтверждена!\n\nВаш ключ:\n`{fake_key}`\n\nСкопируйте его и вставьте в Happ.",
@@ -293,6 +311,44 @@ async def check_payment(callback: types.CallbackQuery):
                         )
                     else:
                         await callback.answer("❌ Оплата еще не поступила. Подождите.", show_alert=True)
+
+# --- ОПЛАТА ЗВЕЗДАМИ ---
+@dp.callback_query(F.data.startswith("stars_"))
+async def process_stars(callback: types.CallbackQuery):
+    plan = callback.data.split("_")[1]
+    # Перевод рублей в звезды (примерный курс 1 звезда = 1.5-2 рубля, берем 2)
+    price_rub = 40 if plan == "1m" else 100
+    stars_price = int(price_rub / 2) 
+    
+    await bot.send_invoice(
+        chat_id=callback.from_user.id,
+        title=f"NEXUS VPN - {plan}",
+        description=f"Доступ к VPN на {plan}",
+        payload=f"stars_{callback.from_user.id}_{plan}",
+        provider_token="", # Для звезд оставляем пустым
+        currency="XTR",    # Код валюты Telegram Stars
+        prices=[LabeledPrice(label=f"VPN {plan}", amount=stars_price)]
+    )
+    await callback.answer()
+
+@dp.pre_checkout_query()
+async def process_pre_checkout(pre_checkout_query: PreCheckoutQuery):
+    await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
+
+@dp.message(F.successful_payment)
+async def process_successful_payment(message: types.Message):
+    payload = message.successful_payment.invoice_payload
+    if payload.startswith("stars_"):
+        _, user_id, plan = payload.split("_")
+        price = 40 if plan == "1m" else 100
+        fake_key = "vless://real-key-from-server@de27.h1cloud.net:25054?...#Germany"
+        
+        save_purchase(message.from_user.id, price, fake_key)
+        
+        await message.answer(
+            f"✅ Оплата звездами прошла!\n\nВаш ключ:\n`{fake_key}`\n\nСкопируйте его и вставьте в Happ.",
+            parse_mode="Markdown"
+        )
 
 @dp.message(F.text == "👤 Мой профиль")
 async def profile(message: types.Message):
