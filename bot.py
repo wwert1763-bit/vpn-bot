@@ -1,200 +1,315 @@
 import asyncio
 import logging
-import random
-import os
+import sqlite3
 import aiohttp
-from aiohttp import web
+from datetime import datetime
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiogram.types import LabeledPrice, PreCheckoutQuery
-from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.exceptions import TelegramForbiddenError
 
-# ================= НАСТРОЙКИ =================
-BOT_TOKEN = "9200899614:AAFCcDLprx6o1MIkDVOPfFOeMA1eMhve2P0" 
-ADMIN_ID = 5884767841 
-SUPPORT_USERNAME = "neeloq"
+# --- НАСТРОЙКИ ---
+BOT_TOKEN = "9200899614:AAFCcDLprx6o1MIkDVOPfFOeMA1eMhve2P0"
+CRYPTO_BOT_TOKEN = "663855:AAcDzgWR4pqFxBOIryv6mHp69gPeq3bK2p1"
+ADMIN_PASSWORD = "1270204"
+DB_NAME = "vpn_bot.db"
 
-# ВСТАВЬ НОВЫЙ ТОКЕН ОТ CRYPTOBOT
-CRYPTO_PAY_TOKEN = "663855:AAcDzgWR4pqFxBOIryv6mHp69gPeq3bK2p1"
+# --- БАЗА ДАННЫХ ---
+def init_db():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute('''CREATE TABLE IF NOT EXISTS users (
+        user_id INTEGER PRIMARY KEY,
+        username TEXT,
+        joined_at TEXT,
+        is_admin INTEGER DEFAULT 0
+    )''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS purchases (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        amount INTEGER,
+        vpn_key TEXT,
+        created_at TEXT
+    )''')
+    conn.commit()
+    conn.close()
 
-# Списки серверов и прокси
-VPN_SERVERS = [
-    "vless://d65cc14c-f53f-4fe2-b262-97856601319c@169.40.42.75:443?security=reality&pbk=e2RLf57Li_-MDZGE9ss1BWPgP54mqRb5PfXhW2jcVVg&sid=c39cc7310a&sni=yahoo.com&fp=firefox&type=tcp#Germany",
-    "vless://b8794f67-80d9-4124-8fc5-2d2ce5516573@50.7.41.142:443?security=reality&pbk=AYL1z7PNyo6LqYLeZpXa50FnK9eEu7o18KHRhOlST1w&sid=bd72&sni=deepl.com&fp=chrome&type=tcp#Switzerland",
-    "vless://f8c8dc3d-0d37-46b0-8b34-a7232882fcfe@169.197.142.22:18000?encryption=none&type=tcp&security=none#USA",
-    "vless://9a0e84f8-4b58-477f-99da-5fac5a2e58e8@45.133.151.187:443?security=reality&pbk=pAgrBKJCmuSJHIzYkEJTqsOBOVBK_DMtEqFPo-PaTkg&sid=b3c9d0c6bdd114a6&sni=36a466g.fi1.h1clayd.click&fp=ios&type=tcp&headerType=none#Russia"
-]
+def add_user(user_id, username):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR IGNORE INTO users (user_id, username, joined_at) VALUES (?, ?, ?)", 
+                   (user_id, username, datetime.now().strftime("%Y-%m-%d %H:%M")))
+    conn.commit()
+    conn.close()
 
-PROXY_LINKS = [
-    "https://t.me/proxy?server=kostyanchekloh.lol&port=443&secret=ee3f72634c46d320aaa30d8bb2682e9b497975672d6c696e6b2e7275",
-    "https://t.me/proxy?server=fresh.t-proxy.info.&port=25565&secret=ee104462821249bd7ac519130220c25d0963646e2e79656b74616e65742e636f6d",
-    "https://t.me/proxy?server=s01.neo-trading.org&port=443&secret=ee7391242569590e01416101927d38b565646e732d73686f702e7275"
-]
+def is_admin(user_id):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT is_admin FROM users WHERE user_id = ?", (user_id,))
+    res = cursor.fetchone()
+    conn.close()
+    return bool(res and res[0] == 1)
 
-# Тарифы VPN
-VPN_TARIFFS = {
-    "vpn_1m": {"name": "VPN 1 месяц", "price_stars": 50, "price_rub": 90, "price_usd": 1},
-    "vpn_3m": {"name": "VPN 3 месяца", "price_stars": 150, "price_rub": 270, "price_usd": 3},
-    "vpn_7m": {"name": "VPN 7 месяцев", "price_stars": 350, "price_rub": 630, "price_usd": 7}
-}
+def set_admin(user_id):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET is_admin = 1 WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
 
-# Тарифы Прокси (19, 10, 7 рублей)
-PROXY_TARIFFS = {
-    "proxy_1": {"name": "Прокси (19₽)", "price_stars": 15, "price_rub": 19, "price_usd": 0.25},
-    "proxy_2": {"name": "Прокси (10₽)", "price_stars": 8, "price_rub": 10, "price_usd": 0.15},
-    "proxy_3": {"name": "Прокси (7₽)", "price_stars": 6, "price_rub": 7, "price_usd": 0.10}
-}
-# ============================================
+def get_stats():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM users")
+    total_users = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM purchases")
+    total_purchases = cursor.fetchone()[0]
+    cursor.execute("SELECT SUM(amount) FROM purchases")
+    total_money = cursor.fetchone()[0] or 0
+    conn.close()
+    return total_users, total_purchases, total_money
 
-logging.basicConfig(level=logging.INFO)
+def get_all_users():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id FROM users")
+    users = [row[0] for row in cursor.fetchall()]
+    conn.close()
+    return users
+
+# --- СОСТОЯНИЯ ---
+class AdminStates(StatesGroup):
+    waiting_for_password = State()
+    waiting_for_broadcast = State()
+
+# --- КЛАВИАТУРЫ ---
+def main_menu(user_id):
+    kb = [
+        [KeyboardButton(text="🛒 Купить VPN")],
+        [KeyboardButton(text="👤 Мой профиль"), KeyboardButton(text="ℹ️ Помощь")]
+    ]
+    if is_admin(user_id):
+        kb.append([KeyboardButton(text="⚙️ Админ-панель")])
+    else:
+        kb.append([KeyboardButton(text="🔑 Ввести пароль админа")])
+    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
+
+def admin_menu():
+    kb = [
+        [KeyboardButton(text="📊 Статистика")],
+        [KeyboardButton(text="👥 Пользователи")],
+        [KeyboardButton(text="💰 Покупки")],
+        [KeyboardButton(text="📢 Рассылка")],
+        [KeyboardButton(text="🔙 Выйти в меню")]
+    ]
+    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
+
+# --- БОТ ---
 bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher()
-
-async def create_crypto_invoice(amount_usd, description, payload):
-    url = "https://pay.crypt.bot/api/createInvoice"
-    headers = {"Crypto-Pay-API-Token": CRYPTO_PAY_TOKEN}
-    payload_data = {
-        "currency_type": "fiat", "fiat": "USD", "amount": str(amount_usd),
-        "description": description, "payload": payload
-    }
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url, json=payload_data, headers=headers) as response:
-            if response.status == 200:
-                data = await response.json()
-                if data.get("ok"):
-                    return data["result"]["bot_invoice_url"]
-            return None
-
-def main_menu():
-    builder = InlineKeyboardBuilder()
-    builder.button(text="🛡 VPN (полный доступ)", callback_data="menu_vpn")
-    builder.button(text="✈️ Прокси (только Telegram)", callback_data="menu_proxy")
-    builder.button(text="💬 Поддержка", url=f"https://t.me/{SUPPORT_USERNAME}")
-    builder.adjust(1)
-    return builder.as_markup()
-
-def tariffs_menu(product_type):
-    builder = InlineKeyboardBuilder()
-    tariffs = VPN_TARIFFS if product_type == "vpn" else PROXY_TARIFFS
-    for key, data in tariffs.items():
-        builder.button(text=f"{data['name']} - {data['price_rub']}₽", callback_data=f"tariff_{key}")
-    builder.button(text="⬅️ Назад", callback_data="back_to_main")
-    builder.adjust(1)
-    return builder.as_markup()
-
-def pay_method_menu(tariff_id):
-    tariff = VPN_TARIFFS.get(tariff_id) or PROXY_TARIFFS.get(tariff_id)
-    builder = InlineKeyboardBuilder()
-    builder.button(text=f"⭐ Оплатить Звездами ({tariff['price_stars']})", callback_data=f"stars_{tariff_id}")
-    builder.button(text=f"🪙 Оплатить Криптой ({tariff['price_usd']}$)", callback_data=f"crypto_{tariff_id}")
-    builder.button(text="⬅️ Назад", callback_data="back_to_main")
-    builder.adjust(1)
-    return builder.as_markup()
+dp = Dispatcher(storage=MemoryStorage())
 
 @dp.message(Command("start"))
-async def start_cmd(message: types.Message):
-    await message.answer("👋 Привет! Что хотите приобрести?", reply_markup=main_menu())
-
-@dp.callback_query(F.data == "back_to_main")
-async def back_to_main(call: types.CallbackQuery):
-    await call.message.edit_text("👋 Привет! Что хотите приобрести?", reply_markup=main_menu())
-
-@dp.callback_query(F.data == "menu_vpn")
-async def show_vpn(call: types.CallbackQuery):
-    await call.message.edit_text("🛡 Выберите тариф VPN:", reply_markup=tariffs_menu("vpn"))
-
-@dp.callback_query(F.data == "menu_proxy")
-async def show_proxy(call: types.CallbackQuery):
-    await call.message.edit_text("✈️ Выберите тариф Прокси:", reply_markup=tariffs_menu("proxy"))
-
-@dp.callback_query(F.data.startswith("tariff_"))
-async def select_tariff(call: types.CallbackQuery):
-    tariff_id = call.data.split("tariff_")[1]
-    t = VPN_TARIFFS.get(tariff_id) or PROXY_TARIFFS.get(tariff_id)
-    await call.message.edit_text(
-        f"Выбран тариф: <b>{t['name']}</b>\nСумма: {t['price_rub']}₽ ({t['price_usd']}$)\n\nКак будем оплачивать?",
-        reply_markup=pay_method_menu(tariff_id), parse_mode="HTML"
+async def cmd_start(message: types.Message):
+    add_user(message.from_user.id, message.from_user.username or "NoUsername")
+    await message.answer(
+        f"Привет, {message.from_user.first_name}!\n"
+        "Добро пожаловать в NEXUS VPN. Здесь ты можешь купить быстрый и надежный доступ.",
+        reply_markup=main_menu(message.from_user.id)
     )
 
-async def deliver_product(user_id, tariff_id):
-    if tariff_id.startswith("vpn"):
-        link = random.choice(VPN_SERVERS)
-        text = f"✅ Ваш VPN ключ:\n<code>{link}</code>\n\nСкопируйте в Happ."
-    else:
-        link = random.choice(PROXY_LINKS)
-        text = f"✅ Ваша ссылка на прокси:\n<code>{link}</code>\n\nНажмите и подключитесь в Telegram."
-    await bot.send_message(user_id, text, parse_mode="HTML")
+# --- ВХОД В АДМИНКУ ---
+@dp.message(F.text == "🔑 Ввести пароль админа")
+async def ask_password(message: types.Message, state: FSMContext):
+    await message.answer("Введите пароль администратора:")
+    await state.set_state(AdminStates.waiting_for_password)
 
-@dp.callback_query(F.data.startswith("stars_"))
-async def pay_stars(call: types.CallbackQuery):
-    tariff_id = call.data.split("stars_")[1]
-    t = VPN_TARIFFS.get(tariff_id) or PROXY_TARIFFS.get(tariff_id)
-    await call.message.answer_invoice(
-        title=t['name'], description="Доступ к сервису",
-        payload=f"stars_{tariff_id}_{call.from_user.id}",
-        currency="XTR", prices=[LabeledPrice(label="XTR", amount=t["price_stars"])],
+@dp.message(AdminStates.waiting_for_password)
+async def check_password(message: types.Message, state: FSMContext):
+    if message.text == ADMIN_PASSWORD:
+        set_admin(message.from_user.id)
+        await message.answer("✅ Пароль верный. Вы вошли в админ-панель.", reply_markup=admin_menu())
+    else:
+        await message.answer("❌ Неверный пароль.", reply_markup=main_menu(message.from_user.id))
+    await state.clear()
+
+# --- АДМИН ПАНЕЛЬ ---
+@dp.message(F.text == "⚙️ Админ-панель")
+async def open_admin(message: types.Message):
+    if not is_admin(message.from_user.id): return
+    await message.answer("Добро пожаловать в админ-панель:", reply_markup=admin_menu())
+
+@dp.message(F.text == "📊 Статистика")
+async def admin_stats(message: types.Message):
+    if not is_admin(message.from_user.id): return
+    users, purchases, money = get_stats()
+    await message.answer(
+        f"📈 **Статистика бота**\n\n"
+        f"👥 Всего пользователей: {users}\n"
+        f"🛒 Всего покупок: {purchases}\n"
+        f"💵 Заработано: {money} ₽",
+        parse_mode="Markdown"
     )
-    await call.answer()
 
-@dp.pre_checkout_query()
-async def pre_checkout(query: PreCheckoutQuery):
-    await bot.answer_pre_checkout_query(query.id, ok=True)
+@dp.message(F.text == "👥 Пользователи")
+async def admin_users(message: types.Message):
+    if not is_admin(message.from_user.id): return
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id, username, joined_at FROM users ORDER BY joined_at DESC LIMIT 10")
+    users = cursor.fetchall()
+    conn.close()
+    text = "👥 **Последние 10 юзеров:**\n\n"
+    for u in users:
+        text += f"ID: `{u[0]}` | @{u[1]} | {u[2]}\n"
+    await message.answer(text, parse_mode="Markdown")
 
-@dp.message(F.successful_payment)
-async def on_success_payment(message: types.Message):
-    payload = message.successful_payment.invoice_payload
-    parts = payload.split("_")
-    tariff_id = "_".join(parts[1:-1])
-    await message.answer("✅ Оплата Stars прошла успешно!")
-    await deliver_product(message.from_user.id, tariff_id)
+@dp.message(F.text == "💰 Покупки")
+async def admin_purchases(message: types.Message):
+    if not is_admin(message.from_user.id): return
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id, amount, created_at FROM purchases ORDER BY id DESC LIMIT 10")
+    purchases = cursor.fetchall()
+    conn.close()
+    text = "💰 **Последние 10 покупок:**\n\n"
+    if not purchases:
+        text += "Пока нет покупок."
+    for p in purchases:
+        text += f"Юзер `{p[0]}` купил на {p[1]} ₽ ({p[2]})\n"
+    await message.answer(text, parse_mode="Markdown")
 
-@dp.callback_query(F.data.startswith("crypto_"))
-async def pay_crypto(call: types.CallbackQuery):
-    tariff_id = call.data.split("crypto_")[1]
-    t = VPN_TARIFFS.get(tariff_id) or PROXY_TARIFFS.get(tariff_id)
-    await call.message.edit_text("⏳ Создаю счет...")
-    invoice_url = await create_crypto_invoice(t['price_usd'], t['name'], f"{tariff_id}_{call.from_user.id}")
-    if invoice_url:
-        builder = InlineKeyboardBuilder()
-        builder.button(text=f"💳 Оплатить {t['price_usd']}$", url=invoice_url)
-        builder.button(text="⬅️ Назад", callback_data="back_to_main")
-        builder.adjust(1)
-        await call.message.edit_text(
-            f"🪙 <b>Оплата криптой</b>\n\nТариф: {t['name']}\nСумма: {t['price_usd']}$",
-            reply_markup=builder.as_markup(), parse_mode="HTML"
-        )
-    else:
-        await call.message.edit_text("❌ Ошибка создания счета. Проверьте токен.")
+# --- РАССЫЛКА ---
+@dp.message(F.text == "📢 Рассылка")
+async def start_broadcast(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id): return
+    await message.answer("Отправьте текст сообщения для рассылки (можно с фото/видео):")
+    await state.set_state(AdminStates.waiting_for_broadcast)
 
-async def handle_ping(request):
-    return web.Response(text="Bot is alive!")
+@dp.message(AdminStates.waiting_for_broadcast)
+async def do_broadcast(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id): return
+    users = get_all_users()
+    success = 0
+    failed = 0
+    sent_msg = await message.answer("🚀 Рассылка запущена...")
+    for user_id in users:
+        try:
+            await message.copy_to(chat_id=user_id)
+            success += 1
+            await asyncio.sleep(0.05)
+        except TelegramForbiddenError:
+            failed += 1
+        except Exception:
+            failed += 1
+    await sent_msg.edit_text(f"✅ Рассылка завершена.\n\nУспешно: {success}\nОшибок: {failed}")
+    await state.clear()
 
-async def handle_crypto_webhook(request):
-    try:
-        data = await request.json()
-        if data.get("update_type") == "invoice_paid":
-            payload = data["payload"]["payload"]
-            user_id = int(payload.split("_")[-1])
-            tariff_id = "_".join(payload.split("_")[:-1])
-            await deliver_product(user_id, tariff_id)
-            return web.Response(text="OK")
-    except Exception as e:
-        logging.error(f"Webhook error: {e}")
-    return web.Response(text="OK")
+@dp.message(F.text == "🔙 Выйти в меню")
+async def exit_admin(message: types.Message):
+    await message.answer("Вы вернулись в главное меню.", reply_markup=main_menu(message.from_user.id))
 
-async def start_web_server():
-    app = web.Application()
-    app.router.add_get('/', handle_ping)
-    app.router.add_post('/crypto_webhook', handle_crypto_webhook)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    port = int(os.environ.get("PORT", 8080))
-    site = web.TCPSite(runner, '0.0.0.0', port)
-    await site.start()
-    logging.info(f"Web server started on port {port}")
+# --- ПОЛЬЗОВАТЕЛЬСКАЯ ЧАСТЬ ---
+@dp.message(F.text == "🛒 Купить VPN")
+async def buy_vpn(message: types.Message):
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="1 месяц - 40 ₽", callback_data="buy_1m")],
+        [InlineKeyboardButton(text="3 месяца - 100 ₽", callback_data="buy_3m")]
+    ])
+    await message.answer("Выберите тариф для покупки:", reply_markup=kb)
 
+# --- ОПЛАТА ЧЕРЕЗ CRYPTOBOT ---
+@dp.callback_query(F.data.startswith("buy_"))
+async def process_buy(callback: types.CallbackQuery):
+    if not CRYPTO_BOT_TOKEN or CRYPTO_BOT_TOKEN == "ВСТАВЬ_ТОКЕН_ОТ_CRYPTOBOT":
+        await callback.message.answer("⚠️ Ошибка: Админ не настроил оплату через CryptoBot.")
+        return
+
+    plan = callback.data.split("_")[1]
+    price = 40 if plan == "1m" else 100
+    
+    url = "https://pay.crypt.bot/api/createInvoice"
+    headers = {"Crypto-Pay-API-Token": CRYPTO_BOT_TOKEN}
+    payload = {
+        "asset": "USDT",
+        "amount": str(price),
+        "description": f"VPN подписка на {plan}",
+        "payload": f"{callback.from_user.id}_{plan}"
+    }
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, json=payload, headers=headers) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                if data.get("ok"):
+                    pay_url = data["result"]["pay_url"]
+                    invoice_id = data["result"]["invoice_id"]
+                    
+                    kb = InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="💳 Оплатить", url=pay_url)],
+                        [InlineKeyboardButton(text="✅ Я оплатил", callback_data=f"check_{invoice_id}_{plan}")]
+                    ])
+                    
+                    await callback.message.edit_text(
+                        f"💳 Счет на {price} ₽ создан.\nПосле оплаты нажмите кнопку «Я оплатил».",
+                        reply_markup=kb
+                    )
+                else:
+                    await callback.message.answer("❌ Ошибка создания счета.")
+            else:
+                await callback.message.answer("❌ Ошибка сети.")
+
+@dp.callback_query(F.data.startswith("check_"))
+async def check_payment(callback: types.CallbackQuery):
+    _, invoice_id, plan = callback.data.split("_")
+    
+    url = "https://pay.crypt.bot/api/getInvoices"
+    headers = {"Crypto-Pay-API-Token": CRYPTO_BOT_TOKEN}
+    payload = {"invoice_ids": invoice_id}
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, json=payload, headers=headers) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                if data.get("ok") and data["result"]["items"]:
+                    invoice = data["result"]["items"][0]
+                    
+                    if invoice["status"] == "paid":
+                        price = 40 if plan == "1m" else 100
+                        fake_key = "vless://real-key-from-server@de27.h1cloud.net:25054?...#Germany"
+                        
+                        conn = sqlite3.connect(DB_NAME)
+                        cursor = conn.cursor()
+                        cursor.execute("INSERT INTO purchases (user_id, amount, vpn_key, created_at) VALUES (?, ?, ?, ?)",
+                                       (callback.from_user.id, price, fake_key, datetime.now().strftime("%Y-%m-%d %H:%M")))
+                        conn.commit()
+                        conn.close()
+                        
+                        await callback.message.edit_text(
+                            f"✅ Оплата подтверждена!\n\nВаш ключ:\n`{fake_key}`\n\nСкопируйте его и вставьте в Happ.",
+                            parse_mode="Markdown"
+                        )
+                    else:
+                        await callback.answer("❌ Оплата еще не поступила. Подождите.", show_alert=True)
+
+@dp.message(F.text == "👤 Мой профиль")
+async def profile(message: types.Message):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM purchases WHERE user_id = ?", (message.from_user.id,))
+    count = cursor.fetchone()[0]
+    conn.close()
+    await message.answer(
+        f"👤 Ваш профиль:\nID: `{message.from_user.id}`\nКуплено подписок: {count}",
+        parse_mode="Markdown"
+    )
+
+# --- ЗАПУСК ---
 async def main():
-    asyncio.create_task(start_web_server())
+    init_db()
+    logging.basicConfig(level=logging.INFO)
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
