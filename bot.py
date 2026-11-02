@@ -13,7 +13,7 @@ from aiogram.exceptions import TelegramForbiddenError
 
 # --- НАСТРОЙКИ ---
 BOT_TOKEN = "9200899614:AAFCcDLprx6o1MIkDVOPfFOeMA1eMhve2P0"
-CRYPTO_BOT_TOKEN = "663855:AAcDzgWR4pqFxBOIryv6mHp69gPeq3bK2p1"
+CRYPTO_BOT_TOKEN = "663855:AAcDzgWR4pqFxBOIryv6mHp69gPeq3bK2p1" # Если не нужен, оставь пустым ""
 ADMIN_PASSWORD = "1270204"
 DB_NAME = "vpn_bot.db"
 
@@ -263,73 +263,85 @@ async def process_crypto(callback: types.CallbackQuery):
         "payload": f"{callback.from_user.id}_{plan}"
     }
 
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url, json=payload, headers=headers) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                if data.get("ok"):
-                    pay_url = data["result"]["pay_url"]
-                    invoice_id = data["result"]["invoice_id"]
-                    
-                    kb = InlineKeyboardMarkup(inline_keyboard=[
-                        [InlineKeyboardButton(text="💳 Оплатить", url=pay_url)],
-                        [InlineKeyboardButton(text="✅ Я оплатил", callback_data=f"check_{invoice_id}_{plan}")]
-                    ])
-                    await callback.message.edit_text(
-                        f"💳 Счет на {price} ₽ создан.\nПосле оплаты нажмите кнопку «Я оплатил».",
-                        reply_markup=kb
-                    )
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload, headers=headers) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    if data.get("ok"):
+                        pay_url = data["result"]["pay_url"]
+                        invoice_id = data["result"]["invoice_id"]
+                        
+                        kb = InlineKeyboardMarkup(inline_keyboard=[
+                            [InlineKeyboardButton(text="💳 Оплатить", url=pay_url)],
+                            [InlineKeyboardButton(text="✅ Я оплатил", callback_data=f"check_{invoice_id}_{plan}")]
+                        ])
+                        await callback.message.edit_text(
+                            f"💳 Счет на {price} ₽ создан.\nПосле оплаты нажмите кнопку «Я оплатил».",
+                            reply_markup=kb
+                        )
+                    else:
+                        await callback.message.answer("❌ Ошибка создания счета.")
                 else:
-                    await callback.message.answer("❌ Ошибка создания счета.")
-            else:
-                await callback.message.answer("❌ Ошибка сети.")
+                    await callback.message.answer("❌ Ошибка сети или неверный токен.")
+    except Exception as e:
+        logging.error(f"CryptoBot Error: {e}")
+        await callback.message.answer("❌ Ошибка при обращении к CryptoBot.")
 
-# ИСПРАВЛЕНА ОШИБКА: invoice_ids теперь передается массивом [invoice_id]
 @dp.callback_query(F.data.startswith("check_"))
 async def check_payment(callback: types.CallbackQuery):
     _, invoice_id, plan = callback.data.split("_")
     
     url = "https://pay.crypt.bot/api/getInvoices"
     headers = {"Crypto-Pay-API-Token": CRYPTO_BOT_TOKEN}
-    payload = {"invoice_ids": [invoice_id]}  # <--- ИСПРАВЛЕНО
+    payload = {"invoice_ids": [invoice_id]}  # ВАЖНО: массив!
     
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url, json=payload, headers=headers) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                if data.get("ok") and data["result"]["items"]:
-                    invoice = data["result"]["items"][0]
-                    
-                    if invoice["status"] == "paid":
-                        price = 40 if plan == "1m" else 100
-                        fake_key = "vless://real-key-from-server@de27.h1cloud.net:25054?...#Germany"
-                        save_purchase(callback.from_user.id, price, fake_key)
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload, headers=headers) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    if data.get("ok") and data["result"]["items"]:
+                        invoice = data["result"]["items"][0]
                         
-                        await callback.message.edit_text(
-                            f"✅ Оплата подтверждена!\n\nВаш ключ:\n`{fake_key}`\n\nСкопируйте его и вставьте в Happ.",
-                            parse_mode="Markdown"
-                        )
-                    else:
-                        await callback.answer("❌ Оплата еще не поступила. Подождите.", show_alert=True)
+                        if invoice["status"] == "paid":
+                            price = 40 if plan == "1m" else 100
+                            fake_key = "vless://real-key-from-server@de27.h1cloud.net:25054?...#Germany"
+                            save_purchase(callback.from_user.id, price, fake_key)
+                            
+                            await callback.message.edit_text(
+                                f"✅ Оплата подтверждена!\n\nВаш ключ:\n`{fake_key}`\n\nСкопируйте его и вставьте в Happ.",
+                                parse_mode="Markdown"
+                            )
+                        else:
+                            await callback.answer("❌ Оплата еще не поступила. Подождите.", show_alert=True)
+    except Exception as e:
+        logging.error(f"CryptoBot Check Error: {e}")
+        await callback.answer("❌ Ошибка проверки оплаты.", show_alert=True)
 
 # --- ОПЛАТА ЗВЕЗДАМИ ---
 @dp.callback_query(F.data.startswith("stars_"))
 async def process_stars(callback: types.CallbackQuery):
     plan = callback.data.split("_")[1]
-    # Перевод рублей в звезды (примерный курс 1 звезда = 1.5-2 рубля, берем 2)
     price_rub = 40 if plan == "1m" else 100
-    stars_price = int(price_rub / 2) 
     
-    await bot.send_invoice(
-        chat_id=callback.from_user.id,
-        title=f"NEXUS VPN - {plan}",
-        description=f"Доступ к VPN на {plan}",
-        payload=f"stars_{callback.from_user.id}_{plan}",
-        provider_token="", # Для звезд оставляем пустым
-        currency="XTR",    # Код валюты Telegram Stars
-        prices=[LabeledPrice(label=f"VPN {plan}", amount=stars_price)]
-    )
-    await callback.answer()
+    # 1 звезда = 1 рубль (с учетом комиссии Telegram)
+    stars_price = price_rub 
+    
+    try:
+        await bot.send_invoice(
+            chat_id=callback.from_user.id,
+            title=f"NEXUS VPN - {plan}",
+            description=f"Доступ к VPN на {plan}",
+            payload=f"stars_{callback.from_user.id}_{plan}",
+            provider_token="", # Для звезд оставляем пустым
+            currency="XTR",    # Код валюты Telegram Stars
+            prices=[LabeledPrice(label=f"VPN {plan}", amount=stars_price)] # ВАЖНО: список [ ]
+        )
+        await callback.answer()
+    except Exception as e:
+        logging.error(f"Stars Error: {e}")
+        await callback.message.answer("❌ Ошибка выставления счета звездами.")
 
 @dp.pre_checkout_query()
 async def process_pre_checkout(pre_checkout_query: PreCheckoutQuery):
