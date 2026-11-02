@@ -9,7 +9,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, LabeledPrice, PreCheckoutQuery
-from aiogram.exceptions import TelegramForbiddenError
+from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
 
 # --- НАСТРОЙКИ ---
 BOT_TOKEN = "9200899614:AAFCcDLprx6o1MIkDVOPfFOeMA1eMhve2P0"
@@ -196,34 +196,42 @@ async def admin_purchases(message: types.Message):
         text += f"Юзер `{p[0]}` купил на {p[1]} ₽ ({p[2]})\n"
     await message.answer(text, parse_mode="Markdown")
 
-# --- РАССЫЛКА ---
+# --- РАССЫЛКА (ИСПРАВЛЕНО) ---
 @dp.message(F.text == "📢 Рассылка")
 async def start_broadcast(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id): return
-    await message.answer("Отправьте текст сообщения для рассылки (можно с фото/видео):")
+    await message.answer("Отправьте текст, фото или видео для рассылки (все получат копию этого сообщения):")
     await state.set_state(AdminStates.waiting_for_broadcast)
 
 @dp.message(AdminStates.waiting_for_broadcast)
 async def do_broadcast(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id): return
+    
     users = get_all_users()
     success = 0
     failed = 0
-    sent_msg = await message.answer("🚀 Рассылка запущена...")
+    sent_msg = await message.answer("🚀 Рассылка запущена, подождите...")
+    
     for user_id in users:
         try:
+            # Копируем сообщение со всеми медиа
             await message.copy_to(chat_id=user_id)
             success += 1
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.05)  # Задержка, чтобы Телеграм не забанил за спам
         except TelegramForbiddenError:
+            failed += 1  # Юзер заблокировал бота
+        except TelegramBadRequest:
+            failed += 1  # Ошибка запроса (например, аккаунт удален)
+        except Exception as e:
+            logging.error(f"Ошибка при рассылке юзеру {user_id}: {e}")
             failed += 1
-        except Exception:
-            failed += 1
+            
     await sent_msg.edit_text(f"✅ Рассылка завершена.\n\nУспешно: {success}\nОшибок: {failed}")
     await state.clear()
 
 @dp.message(F.text == "🔙 Выйти в меню")
-async def exit_admin(message: types.Message):
+async def exit_admin(message: types.Message, state: FSMContext):
+    await state.clear()
     await message.answer("Вы вернулись в главное меню.", reply_markup=main_menu(message.from_user.id))
 
 # --- ПОЛЬЗОВАТЕЛЬСКАЯ ЧАСТЬ ---
@@ -324,8 +332,6 @@ async def check_payment(callback: types.CallbackQuery):
 async def process_stars(callback: types.CallbackQuery):
     plan = callback.data.split("_")[1]
     price_rub = 40 if plan == "1m" else 100
-    
-    # 1 звезда = 1 рубль (с учетом комиссии Telegram)
     stars_price = price_rub 
     
     try:
@@ -334,9 +340,9 @@ async def process_stars(callback: types.CallbackQuery):
             title=f"NEXUS VPN - {plan}",
             description=f"Доступ к VPN на {plan}",
             payload=f"stars_{callback.from_user.id}_{plan}",
-            provider_token="", # Для звезд оставляем пустым
-            currency="XTR",    # Код валюты Telegram Stars
-            prices=[LabeledPrice(label=f"VPN {plan}", amount=stars_price)] # ВАЖНО: список [ ]
+            provider_token="",
+            currency="XTR",
+            prices=[LabeledPrice(label=f"VPN {plan}", amount=stars_price)]
         )
         await callback.answer()
     except Exception as e:
