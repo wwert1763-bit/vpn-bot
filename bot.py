@@ -196,11 +196,11 @@ async def admin_purchases(message: types.Message):
         text += f"Юзер `{p[0]}` купил на {p[1]} ₽ ({p[2]})\n"
     await message.answer(text, parse_mode="Markdown")
 
-# --- РАССЫЛКА (ИСПРАВЛЕНО) ---
+# --- РАССЫЛКА ---
 @dp.message(F.text == "📢 Рассылка")
 async def start_broadcast(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id): return
-    await message.answer("Отправьте текст, фото или видео для рассылки (все получат копию этого сообщения):")
+    await message.answer("Отправьте текст, фото или видео для рассылки:")
     await state.set_state(AdminStates.waiting_for_broadcast)
 
 @dp.message(AdminStates.waiting_for_broadcast)
@@ -214,14 +214,13 @@ async def do_broadcast(message: types.Message, state: FSMContext):
     
     for user_id in users:
         try:
-            # Копируем сообщение со всеми медиа
             await message.copy_to(chat_id=user_id)
             success += 1
-            await asyncio.sleep(0.05)  # Задержка, чтобы Телеграм не забанил за спам
+            await asyncio.sleep(0.05)
         except TelegramForbiddenError:
-            failed += 1  # Юзер заблокировал бота
+            failed += 1
         except TelegramBadRequest:
-            failed += 1  # Ошибка запроса (например, аккаунт удален)
+            failed += 1
         except Exception as e:
             logging.error(f"Ошибка при рассылке юзеру {user_id}: {e}")
             failed += 1
@@ -252,7 +251,7 @@ async def select_payment_method(callback: types.CallbackQuery):
         reply_markup=pay_method_menu(plan)
     )
 
-# --- ОПЛАТА КРИПТОЙ ---
+# --- ОПЛАТА КРИПТОЙ (ИСПРАВЛЕНО) ---
 @dp.callback_query(F.data.startswith("crypto_"))
 async def process_crypto(callback: types.CallbackQuery):
     if not CRYPTO_BOT_TOKEN or CRYPTO_BOT_TOKEN == "ВСТАВЬ_ТОКЕН_ОТ_CRYPTOBOT":
@@ -264,9 +263,13 @@ async def process_crypto(callback: types.CallbackQuery):
     
     url = "https://pay.crypt.bot/api/createInvoice"
     headers = {"Crypto-Pay-API-Token": CRYPTO_BOT_TOKEN}
+    
+    # ИСПРАВЛЕНИЕ: Указываем, что сумма в рублях (fiat), а не в USDT
     payload = {
         "asset": "USDT",
         "amount": str(price),
+        "currency_type": "fiat",  # <--- Говорим, что это фиат
+        "fiat": "RUB",            # <--- Валюта - рубли
         "description": f"VPN подписка на {plan}",
         "payload": f"{callback.from_user.id}_{plan}"
     }
@@ -302,7 +305,7 @@ async def check_payment(callback: types.CallbackQuery):
     
     url = "https://pay.crypt.bot/api/getInvoices"
     headers = {"Crypto-Pay-API-Token": CRYPTO_BOT_TOKEN}
-    payload = {"invoice_ids": [invoice_id]}  # ВАЖНО: массив!
+    payload = {"invoice_ids": [invoice_id]}
     
     try:
         async with aiohttp.ClientSession() as session:
@@ -388,3 +391,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+    
