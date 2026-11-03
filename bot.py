@@ -31,9 +31,9 @@ PROXY_LINKS = [
 ]
 
 VPN_TARIFFS = {
-    "vpn_1m": {"name": "VPN 1 месяц", "price_stars": 50, "price_rub": 90, "price_usd": 1},
-    "vpn_3m": {"name": "VPN 3 месяца", "price_stars": 150, "price_rub": 270, "price_usd": 3},
-    "vpn_7m": {"name": "VPN 7 месяцев", "price_stars": 350, "price_rub": 630, "price_usd": 7}
+    "vpn_1m": {"name": "VPN 1 месяц", "price_stars": 10, "price_rub": 90, "price_usd": 1},
+    "vpn_3m": {"name": "VPN 3 месяца", "price_stars": 40, "price_rub": 270, "price_usd": 3},
+    "vpn_7m": {"name": "VPN 7 месяцев", "price_stars": 100, "price_rub": 630, "price_usd": 7}
 }
 
 PROXY_TARIFFS = {
