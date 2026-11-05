@@ -31,15 +31,15 @@ PROXY_LINKS = [
 ]
 
 VPN_TARIFFS = {
-    "vpn_1m": {"name": "VPN 1 месяц", "price_stars": 10, "price_rub": 90, "price_usd": 1},
-    "vpn_3m": {"name": "VPN 3 месяца", "price_stars": 40, "price_rub": 270, "price_usd": 3},
-    "vpn_7m": {"name": "VPN 7 месяцев", "price_stars": 100, "price_rub": 630, "price_usd": 7}
+    "vpn_1m": {"name": "VPN 1 месяц", "price_stars": 40, "price_rub": 90, "price_usd": 1},
+    "vpn_3m": {"name": "VPN 3 месяца", "price_stars": 120, "price_rub": 270, "price_usd": 3},
+    "vpn_7m": {"name": "VPN 7 месяцев", "price_stars": 170, "price_rub": 630, "price_usd": 7}
 }
 
 PROXY_TARIFFS = {
-    "proxy_1": {"name": "Прокси (19₽)", "price_stars": 15, "price_rub": 19, "price_usd": 0.25},
-    "proxy_2": {"name": "Прокси (10₽)", "price_stars": 8, "price_rub": 10, "price_usd": 0.15},
-    "proxy_3": {"name": "Прокси (7₽)", "price_stars": 6, "price_rub": 7, "price_usd": 0.10}
+    "proxy_1": {"name": "Прокси (19₽)", "price_stars": 40, "price_rub": 90, "price_usd": 0.40},
+    "proxy_2": {"name": "Прокси (10₽)", "price_stars": 40, "price_rub": 25, "price_usd": 0.60},
+    "proxy_3": {"name": "Прокси (7₽)", "price_stars": 40, "price_rub": 30, "price_usd": 0.70}
 }
 # ============================================
 
